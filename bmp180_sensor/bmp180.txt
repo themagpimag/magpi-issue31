@@ -1,0 +1,357 @@
+Here in the UK we're obsessed with weather and climate probably because it rains so much on our small green island. Everyday we watch the TV, we look at our phones or tablets to get a weather forecast. We're relying on the UK Meteorological Office (http://www.metoffice.gov.uk) to give us an accurate prediction. They have some of the largest computers in the country doing some incredibly complex computing to try to look into the future. Over the years they have got increasingly good at telling is when it will rain, when it will snow and when it will be bright & sunny.
+
+With our Raspberry Pis we're never going to beat that. What we can do is collect a small set of historical data and get a reading of current conditions. There are lots of folks running their own weather stations and providing reliable data to the Weather Underground (http://wunderground.com). What I'm going to describe for you is a way to get started with collecting two crucial data items and showing some ways to display and archive your data. 
+
+The parts you'll need for this are a Raspberry Pi A/B/B+/A+ or the new 2B, it will work on all five models and a BMP180 sensor on a breakout board (from Sparkfun or Adafruit). I got my BMP180 from Pimoroni http://goo.gl/50wjqR It's easy to wire to your Raspberry Pi there's four wires. GND (to pin 6), 3V3 (to pin 1), SDA (to pin 3) and SCL (to pin 5) 
+
+<<NOTE TO LAYOUT -- insert bmp180.jpg here >>
+
+For archiving data I'm going to use SQLite3 (because that runs OK on the 256MB A & A+ machines). I'm using an SQL database because it's easy to write an insert command and SQL offers the option to do a BETWEEN select predicate which makes it so much easier to extract one hour, one day, one week or even one month's worth of data.
+
+The first thing I do with any new sensor is to read the datasheet http://goo.gl/scjU0g (for this project you won't have to do that) that tells us everything we need to know about how to connect the device, how to power the device and how to program it. Take a look at the datasheet for the BMP180 and you'll see some interesting things. Page two says 3.6V for the power supply so that means it's perfect to use with our Raspberry Pis. Page 11 gives us a flow chart for how to read the data. Page 15 gives us some sample C programming language code to read the calibration data, read a temperature value and read a pressure value. It looks horribly complex but we don't need to worry too much about coding that. As usual with the internet we've won the game without having to write a single line of code, somebody else has done the hard work. There's a python library at https://github.com/keiichishima/RPiSensors which reads the sensor data and presents it in an easy to use format.
+
+We can test the sensor with this very simple program
+
+#!/usr/bin/python
+import smbus
+import bmp180
+
+bus = smbus.SMBus(1)
+sensor = bmp180.Bmp180(bus)
+print sensor.pressure_and_temperature
+
+Running that gets
+$ ./bmp180_basic.py
+(1018.38, 18.4)
+
+With a bit of python & TkInter programming (using the techniques we learned from Paul Sutton's article in MagPi Issue 29)
+
+#!/usr/bin/python
+
+# Needs bmp180 code from https://github.com/keiichishima/RPiSensors
+
+from Tkinter import *
+import time
+import smbus
+import bmp180
+
+root = Tk()
+time1 = ''
+
+bus = smbus.SMBus(1)
+sensor = bmp180.Bmp180(bus)
+sensor.os_mode = 3
+
+clockDisplay = Label(root, font = ('fixed', 24, 'bold'))
+clockDisplay.grid(row = 2, column = 5, columnspan = 2, padx = 5, pady = (2,2))
+
+tempDisplay = Label(root, font=('fixed', 20), )
+tempDisplay.grid(row = 1, column = 5, padx = 5, pady = (5,2))
+
+pressDisplay = Label(root, font=('fixed', 20), )
+pressDisplay.grid(row = 3, column = 5, padx = 5, pady = (2,5))
+
+def tick():
+    global time1
+    press, temp = sensor.pressure_and_temperature
+    tempVal = "%2.1f%sC" % (temp, unichr(176))
+    pressVal = "%4.2f hPa" % (press)
+    pressDisplay.config(text=pressVal)
+    tempDisplay.config(text=tempVal)
+    time2 = time.strftime('%H:%M:%S')
+    if time2 != time1:
+        time1 = time2
+        clockDisplay.config(text=time2)
+    clockDisplay.after(200, tick)
+
+tick()
+root.mainloop()
+
+and we can have a clock, thermometer and barometer on our desktop.
+
+The ambient temperature reading is simple to interpret, that's just an instantaneous reading in degrees Celsius.
+
+Our American readers will want to convert the Celsius value to Fahrenheit with the F = ((C/5)*9)+32) formula. It may be easiest to update the bmp180 library function so that it always returns a reading in Fahrenheit. Change
+self._temperature = ((b5 + 8) / 2**4) / 10.0
+to
+self._temperature = ((((b5 + 8) / 2**4) / 50.0) * 9) + 32
+on line 214.
+
+With a barometer you get an atmospheric pressure reading at your current altitude. If that's a fixed position (in my case my GPS tells me I'm at 112.2m) then I can calculate the pressure at mean sea level.
+
+The alternative is to know the pressure at mean sea level (MSL) and calculate the altitude from the pressure reading. That's based around QNH (pressure at MSL below transition altitude) or 1013.25 hPa (standard pressure once you're above the transition altitude). Pilots also use QFE (pressure at field elevation) which is useful to give them a clue when their wheels are going to hit the ground during landing (something that's a little bit important for safety).
+
+The thing to realise is that you can't calculate altitude and pressure at MSL, simultaneously. Either you have a known altitude, a local pressure value from the sensor at that altitude and can calculate MSL pressure (QNH) or have you have a known MSL pressure, a pressure reading and can calculate your altitude.
+
+The standard pressure of 1013.25hPa is used for calculating flight levels (FLxxx). So when your flight from London Heathrow to New York's JFK says it's at 37,000ft (FL370). That's 37,000ft above MSL at standard pressure regardless of the current pressure value on the ground. The reason for doing that is so that every aircraft is flying to the same rules and that way we can always ensure there's 1000 feet of vertical separation between planes going in opposite directions. Concorde didn't have that problem it used to fly way above everyone else at FL670 so it could only ever meet another Concorde flying towards it.
+
+#!/usr/bin/python
+import math
+import sys
+import argparse
+
+if __name__ == '__main__':
+   parser = argparse.ArgumentParser()
+   parser.add_argument('-a', '--altitude')
+   parser.add_argument('-p', '--pressure')
+   parser.add_argument('-m', '--msl')
+   args = parser.parse_args()
+   if args.altitude is None:
+      args.altitude = 112.2  # Value from my GPS for my house
+   if args.pressure is None:
+      print "Pressure value required"
+      sys.exit(40)
+   if args.msl is None:
+      args.msl = 1013.25
+   args.pressure = float(args.pressure)
+   args.altitude = float(args.altitude)
+   args.msl = float(args.msl)
+
+   print "Alt:", args.altitude, "Pressure:", args.pressure, "MSL:", args.msl
+   print "Sea level:",args.pressure/pow(1-(args.altitude/44330.0),5.255)
+   print "Alt:",(44330.0*(1-pow(args.pressure/args.msl,1/5.255)))
+
+With that program we can use the values from a pressure sensor reading to give you an altitude (if you know the QNH pressure) or can give you a QNH value if you know your altitude. (You will need to change the default altitude unless you're at the same height as me.)
+
+$ ./msl_pressure.py -p 1018.38
+Alt: 112.2 Pressure: 1018.38 MSL: 1013.25
+Sea level: 1032.03283772
+Alt: -42.6223485609
+
+If you don't know your altitude then your nearest airport has the details of the current QNH in their airport information service METAR data. This website http://www.aviationweather.gov/adds/metars/ will give you the current value. Using "EGLL" (for London Heathrow) and untranslated output I get
+
+EGLL 101420Z 14005KT 120V180 9999 BKN022 06/01 Q1032
+
+That reading is from 10th day of the month at 14:20 GMT (Zulu time zone), we have some wind speed and direction info (140° at 5 knots but it's variable between 120° and 180°), broken clouds at 2200 ft (BNK022), a temp of 6°C and dew point of 1°C and that Q1032 value which is the item I'm looking for to calibrate my readings. 
+
+$ ./msl_pressure.py -m 1032 -p 1018.38
+Alt: 112.2 Pressure: 1018.38 MSL: 1032.0
+Sea level: 1032.03283772
+Alt: 111.932260733
+
+The other way to calibrate your readings would be to take your Raspberry Pi and BMP180 sensor to a point where you know a definitive altitude (like the triangulation point on a mountain) and take readings to calculate MSL. Running a Raspberry Pi at the top of Ben Nevis may not be simple, also by the time you reach ground level the local & MSL pressures readings will have changed.
+
+It's all a bit different from Bourdon tubes in aneroid barometers and columns of mercury in older barometers. But the underlying principles are all derived from that old hardware. With mercury, (the heaviest liquid at room temperature) a column of mercury 29.92 inches high (75.9968cm) exerts the same pressure (1013.25hPa) on the bottom of the column as all the air in the sky above you. You'd need a column of water 13.6 times taller to exert the same pressure. 
+
+So now that we know the theory we'll collect our data every three minutes and write it to a database. 
+
+Lets write an SQL data definition language (DDL) statement to create a table. SQLite3 is a very lightweight database engine, it doesn't need a server (unlike MySQL) but they've trimmed down the available data types. My data has three columns; date & time, temp value and pressure value. In MySQL I'd use the special timestamp data type for the first column but with SQLite3 I have to store that as text. For the two numeric columns the sensor gives me data to one decimal place so I'll store those in a real data type. If we're storing date/time values in a text field we should always use 'yyyy-mm-dd hh:mm:ss' as that naturally sorts in chronological order. 
+
+So I create a bmp_data.sql file with the text editor and add this
+create table bmp_data (
+   date_time char(19) primary key,
+   temp real,
+   pressure real
+);
+
+Then run that
+sqlite3 /home/pi/magpi/sensordata.db < bmp_data.sql
+and my database and table are ready to use. For more details of how to work with SQLite3 take a look at http://zetcode.com/db/sqlitepythontutorial/
+
+Once we have an SQL table the basic operations in SQL are insert, select, update and delete. For this data collection application we're only going to use insert and select. I'll leave it as an exercise for you to trim the data, to aggregate it to daily values, weekly values and monthly values. We're collecting a new row in our table every three minutes so that's 480 rows per day at about 70 bytes per row which is about 33K of data, so it's going to take a very long time to fill an SDCard.
+
+#!/usr/bin/python
+
+import time
+import smbus
+import bmp180
+import sqlite3 as sql
+
+time4 = ''
+
+bus = smbus.SMBus(1)
+sensor = bmp180.Bmp180(bus)
+sensor.os_mode = 3
+
+sensorData = sql.connect('/home/pi/magpi/sensordata.db')
+bmp_data = sensorData.cursor()
+
+def tick():
+
+    while True:
+        global time4
+        press, temp = sensor.pressure_and_temperature
+        time1 = time.strftime('%M')
+        if int(time1) % 3 == 0:
+            time2 = time.strftime('%H:%M:%S')
+            time3 = time.strftime('%S')
+            if time3 == '00': # exactly on the minute
+                if time2 != time4:
+                    time4 = time2 # Make sure we only run once
+                    dbDate_Time = time.strftime('%Y-%m-%d %H:%M:%S')
+                    print "Time: ",time4, "Temp: ", temp, "Press: ", press
+                    bmp_data.execute("insert into bmp_data (date_time, temp, pressure) values(?, ?, ?)", (dbDate_Time, temp, press))
+                    sensorData.commit()
+        time.sleep(0.3)
+
+tick()
+
+This program looks slightly more complex than it needs to be but I only want 480 data items per day. I've got four variables that hold timers. time1 is the current minute (mm). time2 is current wall clock time (hh:mm:ss). time3 is current second (ss), time4 is a copy of time2 to avoid inserting duplicate rows (when time2 == time4 skip the insert). Every third of a second we wake up from the sleep and check whether time1 modulo 3 is zero (00, 03, 06, 06, etc.) if it is we get the wall clock time and the current seconds, if seconds are 00 (exactly on the minute) we'll insert a row in the database.
+
+Now that we've got the database running we can use the sqlite3 command processor to run simple queries (this works while the collector is running because we're hardening the data every three minutes).
+
+$ sqlite3 /home/pi/magpi/sensordata.db
+> select count(*) from bmp_data;
+363
+> select max(temp), min(temp), avg(temp), max(pressure), min(pressure), avg(pressure) from bmp_data where date_time between '2015-02-11 09:15:00' and '2015-02-11 13:45:00';
+19.0|17.8|18.5967032967033|1011.4|1009.64|1010.69912087912
+> select temp, pressure from bmp_data where date_time = '2015-02-11 13:30:00';
+18.3|1009.82
+> select date_time, temp, pressure from bmp_data where date_time between '2015-02-11 13:12:00' and '2015-02-11 13:24:59';
+2015-02-11 13:12:00|18.0|1010.0
+2015-02-11 13:15:00|18.0|1010.01
+2015-02-11 13:18:00|18.0|1010.08
+2015-02-11 13:21:00|18.0|1009.89
+2015-02-11 13:24:00|18.0|1009.89
+> .exit
+
+There's always the temptation with SQL to use select * from ... statements. You'll find that I'll never use that in a program, it's OK in the command processor for an ad-hoc query (where you expect a single row as a result). The reason being is that you don't want to have a program that breaks when someone changes the database schema. We've got three columns in this database what happens if I add a humidity sensor and store the data in the same table by adding a new humidity column. If my program uses select date_time, temp, pressure from ... then it won't be affected, my query will get three values returned. If I use select * from ... then today I get three values and all is good. Next week when I add the humidity sensor I'll get four values and a program failure. With high performance database managers the SQL optimiser can do much better work to ensure is uses the best access path to data if it knows that I only want a subset of the available columns. If I build an index it will be better able to use the index columns to run the query. The Database Administrator (DBA) who explained this to me designed the mainframe database used by one of the major banks in the UK, so she certainly knew what she was doing with complex SQL data.
+
+<< NOTE TO LAYOUT -- if the article is broken in two add this
+In the next issue we'll take the data that we're collecting and show you how to plot that on an online graphing service.
+>>
+
+<<< NOTE TO LAYOUT -- if the article is too big for one issue -- break here >>>
+
+<< NOTE TO LAYOUT -- if the article is broken in two add this
+In the last issue we built an SQL database and a program that updates it every three minutes, in this article we're going to take the data and use an online graphing service to plot temperature, local pressure and mean sea level pressure over time.
+>>>
+
+<< NOTE TO LAYOUT -- if the article is broken in two remove this
+The final piece of the puzzle is doing something interesting with the data, the obvious one is to graph it. 
+>>
+
+In my travels round the internet on the Raspberry Pi forums, Arduino forums, Twitter and Google Plus I found someone who'd used an online graphing website at http://plot.ly so I signed up for a free account (using my Google ID) and started reading the comprehensive tutorial pages. They have complete instructions at https://plot.ly/python/getting-started/ to get the python library installed.
+
+The basics are:
+sudo pip install plotly
+
+Visit https://plot.ly/settings/api to create your API key and add four data streaming tokens.
+
+We then need to install them in our credentials file, so you don't have keys and tokens in clear text in your program code. That has two benefits. First they can change without changing the program and secondly we gain some security as the credentials file is private.
+
+python -c "import plotly; plotly.tools.set_credentials_file(username='<yourname here>', api_key='api_key', stream_ids=['<stream1_token>', '<stream2_token>', '<stream3_token>', '<stream4_token>'])"
+
+#!/usr/bin/python
+
+import math
+import sqlite3 as sql
+import time
+import datetime
+import plotly.plotly as py
+import plotly.tools as tls
+from plotly.graph_objs import *
+stream_ids = tls.get_credentials_file()['stream_ids']
+
+sensorData = sql.connect('/home/pi/magpi/sensordata.db')
+bmp_data = sensorData.cursor()
+time3 = ''
+
+temp_trace = Scatter(
+    x = [],
+    y = [],
+    mode = 'lines+markers',
+    name = 'Temp',
+    stream = Stream(
+        token=stream_ids[1]
+    )
+)
+press_trace = Scatter(
+    x = [],
+    y = [],
+    mode = 'lines+markers',
+    name = 'Pressure',
+    yaxis='y2',
+    stream = Stream(
+        token=stream_ids[2]
+    )
+)
+msl_trace = Scatter(
+    x = [],
+    y = [],
+    mode = 'lines+markers',
+    name = 'MSL',
+    yaxis='y2',
+    stream = Stream(
+        token=stream_ids[3]
+    )
+)
+
+data = Data([temp_trace, press_trace, msl_trace])
+layout = Layout(
+    title = 'Temp & Pressure',
+    yaxis = YAxis(
+        title = 'Temp'
+    ),
+    yaxis2 = YAxis(
+        title = 'Pressure',
+        overlaying = 'y',
+        side = 'right'
+    ),
+    showlegend=True,
+    legend=Legend(
+        x=0,
+        y=0
+    )
+)
+fig = Figure(data = data, layout = layout)
+unique_url = py.plot(fig, filename='Temp_pressure', auto_open=False)
+s1 = py.Stream(stream_ids[1])
+s2 = py.Stream(stream_ids[2])
+s3 = py.Stream(stream_ids[3])
+
+def msl(pressure,altitude=112.2):
+    msl = pressure/pow(1-(altitude/44330.0),5.255)
+    return "%4.2f"  % (msl)
+
+def tick():
+    while True:
+        global time3
+        startTime = datetime.datetime.now() - datetime.timedelta(minutes=12)
+        endTime = datetime.datetime.now()
+        sqlStart = startTime.strftime('%Y-%m-%d %H:%M:00')
+        sqlEnd = endTime.strftime('%Y-%m-%d %H:%M:59')
+        time1 = time.strftime('%S')
+        time2 = time.strftime('%M')
+        if (time1 == "00"):
+            if (int(time2) % 12) == 0: # every twelve minutes
+                 if time3 != sqlEnd:
+                     time3 = sqlEnd # prevent duplicate calls
+                     s1.open()
+                     s2.open()
+                     s3.open()
+                     bmp_data.execute("select date_time, temp, pressure from bmp_data where date_time between ? and ?",(sqlStart, sqlEnd))
+                     while True:
+                         row = bmp_data.fetchone()
+                         if row == None:
+                             break
+                         print row[0], row[1], row[2], msl(row[2])
+
+                         s1.write(dict(x=row[0], y=row[1]))
+                         s2.write(dict(x=row[0], y=row[2]))
+                         s3.write(dict(x=row[0], y=msl(row[2])))
+            if (time2 == "00"): # Once an hour
+                 s1.close()
+                 s2.close()
+                 s3.close()
+        else:
+            pass
+        time.sleep(0.3)
+
+tick()
+
+It looks fairly complex at first view, but all we're doing it creating data structures for the y-axes on the graph, we're creating a layout for the whole chart and activating our three data streams. Temperature ranges from 15 to 25, pressure ranges from 970 to 1035 so we'll have temperature on the left axis and pressure on the right axis.
+
+There that function to convert a pressure reading, with my elevation of 112.2m to give a mean sea level pressure. 
+
+Then there's the main timer loop that runs every twelve minutes. Each time round that loop we calculate a current timestamp (sqlEnd) and the start timestamp twelve minutes ago (sqlStart), that means we'll grab the latest 5 rows in the database and send those to the http://plot.ly application programming interface (API) for plotting. It's basically the same programming technique we've used in the data collector program check the time, if the minutes modulo 12 equals zero then run an update. If the minutes are zero (at the top of the hour), close the data streams and re-open them. As soon as we've done an update we store the sqlEnd time to prevent duplicates.
+
+If we change
+unique_url = py.plot(fig, filename='Temp_pressure', auto_open=False)
+to
+unique_url = py.plot(fig, filename='Temp_pressure')
+python will automatically open the web page for our graph in our browser when the program runs. When you're testing code you'll soon understand why I've set auto_open=False.
+
+<< NOTE TO LAYOUT -- insert bmp_graph.jpg here >>
+
+One interesting thing I found from running this for a few weeks is how long it takes my sitting room to cool from 18°C (our thermostat setting) to 15°C overnight. The other interesting thing is how quickly the temp rises from 15°C back up to 18°C first thing in the morning. I've been able to adjust the time controller for our heating system, the thermostat is set to the same level, we've now got it coming on 15 minutes later and going off half an hour earlier and we've not noticed a difference. By the start of March when we get the next bill that BMP180 sensor will have paid for itself.
