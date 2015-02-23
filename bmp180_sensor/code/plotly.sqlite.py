@@ -26,7 +26,7 @@ press_trace = Scatter(
     x = [],
     y = [],
     mode = 'lines+markers',
-    name = 'Pressure',
+    name = 'Pressure (QFE)',
     yaxis='y2',
     stream = Stream(
         token=stream_ids[2]
@@ -36,7 +36,7 @@ msl_trace = Scatter(
     x = [],
     y = [],
     mode = 'lines+markers',
-    name = 'MSL',
+    name = 'MSL (QNH)',
     yaxis='y2',
     stream = Stream(
         token=stream_ids[3]
@@ -62,6 +62,7 @@ layout = Layout(
 )
 fig = Figure(data = data, layout = layout)
 unique_url = py.plot(fig, filename='Temp_pressure', auto_open=False)
+print unique_url
 s1 = py.Stream(stream_ids[1])
 s2 = py.Stream(stream_ids[2])
 s3 = py.Stream(stream_ids[3])
